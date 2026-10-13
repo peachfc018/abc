@@ -1,78 +1,43 @@
-name: Build Windows
+name: Build Windows EXE
 
 on:
   push:
-  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-
-  build-windows:
-
-    runs-on: windows-2025
-
+  build:
+    runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
 
-    - name: Git Checkout
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Setup MSVC
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: x86
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
 
-    - name: Copy project files from scripts
-      run: |
-        copy .github\scripts\abcspace.sln .
-        copy .github\scripts\abcexe.vcxproj .
+      - name: Self-test (source)
+        run: python app.py --self-test
 
-    - name: Generate abclib.vcxproj from dsp
-      shell: powershell
-      run: |
-        # Parse source files from abclib.dsp
-        $dspContent = Get-Content "abclib.dsp" -Raw
-        $sourceFiles = [regex]::Matches($dspContent, 'SOURCE=\.\\([^\r\n]+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
-        
-        Write-Host "Found $($sourceFiles.Count) source files"
-        
-        # Build source file items
-        $sourceItems = ""
-        foreach ($src in $sourceFiles) {
-            if ($src -match '\.c$') {
-                $sourceItems += "    <ClCompile Include=`"$src`" />`r`n"
-            } elseif ($src -match '\.(cpp|cc)$') {
-                $sourceItems += "    <ClCompile Include=`"$src`" />`r`n"
-            } elseif ($src -match '\.h$') {
-                $sourceItems += "    <ClInclude Include=`"$src`" />`r`n"
-            }
-        }
-        
-        # Read template and replace placeholder
-        $template = Get-Content ".github\scripts\abclib.vcxproj.template" -Raw
-        $vcxproj = $template -replace '\{\{SOURCE_FILES\}\}', $sourceItems
-        Set-Content "abclib.vcxproj" $vcxproj -NoNewline
-        
-        Write-Host "abclib.vcxproj generated successfully"
+      - name: Build EXE with PyInstaller
+        run: pyinstaller --onefile --windowed --name "NovaTG翻译" --clean app.py
 
-    - name: Build
-      run: |
-        msbuild abcspace.sln /m /nologo /v:m /p:Configuration=Release /p:Platform=Win32 /p:UseMultiToolTask=true
-        if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
+      - name: Self-test (frozen EXE)
+        run: ./dist/NovaTG翻译.exe --self-test
 
-    - name: Test Executable
-      run: |
-        copy lib\x86\pthreadVC2.dll _TEST\
-        .\_TEST\abc.exe -c "r i10.aig; b; ps; b; rw -l; rw -lz; b; rw -lz; b; ps; cec"
-        if ($LASTEXITCODE -ne 0) { throw "Test failed with exit code $LASTEXITCODE" }
-
-    - name: Stage Executable
-      run: |
-        mkdir staging
-        copy _TEST\abc.exe staging\
-
-    - name: Upload package artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: package-windows
-        path: staging/
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          gh release delete v1.0 --cleanup-tag --yes 2>/dev/null || true
+          gh release create v1.0 "dist/NovaTG翻译.exe" \
+            --title "Nova TG 翻译客户端 v1.0" \
+            --notes "Windows 免安装版，双击即用，无需安装 Python。首次运行需在软件内填写 api_id / api_hash（申请见 README）。"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
